@@ -1,0 +1,285 @@
+---
+title: "MISCADA ASML: Classification Summative Coursework Part 2"
+output: html_notebook
+---
+
+# Model Fitting
+
+
+```{r}
+library(tidyverse)
+library(mlr3verse)
+library(data.table)
+library(ggplot2)
+library(skimr)
+
+set.seed(100)
+```
+
+
+```{r}
+data <- readr::read_csv("heart_failure.csv")
+
+data_model <- data |>
+  mutate(
+    comorbidity_count = anaemia + diabetes + high_blood_pressure + smoking,
+    fatal_mi          = factor(fatal_mi, levels = c(1, 0),
+                               labels = c("Fatal", "Survived"))
+  ) |>
+  select(-time)
+
+data_model_lr <- data_model |>
+  mutate(
+    creatinine_phosphokinase = log1p(creatinine_phosphokinase),
+    serum_creatinine         = log1p(serum_creatinine),
+    platelets                = log1p(platelets)
+  )
+
+skim(data_model)
+```
+
+Train / Test Split
+
+```{r}
+n<- nrow(data_model)
+train_idx <- sample(n, size = floor(0.8 * n))
+
+train_data <- data_model[train_idx, ]
+test_data<- data_model[-train_idx, ]
+train_data_lr<- data_model_lr[train_idx, ]
+test_data_lr<- data_model_lr[-train_idx, ]
+
+cat("Training set size:", nrow(train_data), "\n")
+cat("Test set size:    ", nrow(test_data),  "\n")
+cat("Fatal event rate (train):", round(mean(train_data$fatal_mi == "Fatal") * 100, 1), "%\n")
+cat("Fatal event rate (test): ", round(mean(test_data$fatal_mi  == "Fatal") * 100, 1), "%\n")
+```
+
+task Definition
+
+```{r}
+
+task_hf <- TaskClassif$new(id= "HeartFailure",backend= train_data,target= "fatal_mi",positive= "Fatal")
+task_hf_lr <- TaskClassif$new(id = "HeartFailure_LR",backend= train_data_lr,target= "fatal_mi",positive = "Fatal")
+```
+
+Cross-Validation Strategy
+
+```{r}
+cv5 <- rsmp("cv", folds = 5)
+cv5_lr <- rsmp("cv", folds = 5)
+cv5$instantiate(task_hf)
+cv5_lr$instantiate(task_hf_lr)
+```
+
+Performance Measures
+
+```{r}
+measures <- list(
+  msr("classif.ce"),
+  msr("classif.acc"),
+  msr("classif.auc"),# AUC, 1 is perfect, worse then 0.5 bad 
+  msr("classif.sensitivity"),
+  msr("classif.fnr"),
+  msr("classif.fpr")
+)
+```
+
+Model 1: Logistic Regression
+
+```{r}
+lrn_log_reg <- lrn("classif.log_reg", predict_type = "prob")
+pl_log_reg  <- po("encode") %>>% po(lrn_log_reg)
+```
+
+
+
+Model 2: Random Forest
+
+
+```{r}
+lrn_ranger <- lrn("classif.ranger",predict_type= "prob",num.trees= 500,importance= "impurity",keep.inbag= TRUE)# ibag needed to extract each tree OOB curve
+```
+
+
+
+Baseline Classifier
+
+```{r}
+lrn_baseline <- lrn("classif.featureless", predict_type = "prob")
+```
+
+
+```{r}
+res_baseline <- resample(task_hf,    lrn_baseline, cv5,    store_models = TRUE)
+res_lr       <- resample(task_hf_lr, pl_log_reg,   cv5_lr, store_models = TRUE)
+res_rf       <- resample(task_hf,    lrn_ranger,   cv5,    store_models = TRUE)
+
+```
+```{r}
+baseline_res <- as.data.frame(t(res_baseline$aggregate(measures))) |>
+  mutate(Model = "Baseline")
+
+lr_res <- as.data.frame(t(res_lr$aggregate(measures))) |>
+  mutate(Model = "Logistic Regression")
+
+rf_res <- as.data.frame(t(res_rf$aggregate(measures))) |>
+  mutate(Model = "Random Forest")
+
+results_table <- bind_rows(baseline_res, lr_res, rf_res) |>
+  select(Model, everything())
+
+kable(results_table, digits = 3, caption = "5-Fold CV Results") |>
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+OOB Error Curve 
+```{r}
+
+rf_oob_model <- ranger::ranger(
+  formula       = fatal_mi ~ .,
+  data          = train_data,
+  num.trees     = 500,
+  mtry          = floor(sqrt(ncol(train_data) - 1)),
+  keep.inbag    = TRUE,
+  probability   = TRUE,
+  importance    = "impurity"
+)
+
+# ranger stores cumulative OOB error: extract by refitting progressively
+# using a sequence of tree counts — the standard approach for this plot.
+oob_trees  <- c(1, seq(10, 500, by = 10))
+oob_errors <- sapply(oob_trees, function(b) {
+  m <- ranger::ranger(
+    formula    = fatal_mi ~ .,
+    data       = train_data,
+    num.trees  = b,
+    probability = TRUE,
+    verbose    = FALSE
+  )
+  m$prediction.error
+})
+
+oob_df <- data.frame(trees = oob_trees, oob_error = oob_errors)
+```
+
+```{r}
+ggplot(oob_df, aes(x = trees, y = oob_error)) +
+  geom_line(colour = "steelblue", linewidth = 0.8) +
+  geom_hline(yintercept = min(oob_df$oob_error),
+             linetype = "dashed", colour = "tomato", linewidth = 0.8) +
+  labs(title = "Random Forest OOB Error Curve — Fold 1 (500 Trees)",
+       subtitle = "Dashed = minimum OOB error. Plateau confirms 500 trees is sufficient.",
+       x = "Number of Trees", y = "OOB Classification Error") +
+  theme_minimal()
+```
+
+-
+Logistic Regression Coefficients
+```{r}
+lr_fold1_model <- res_lr$learners[[1]]$graph_model$pipeops$classif.log_reg$state$model
+
+coef_df <- data.frame(
+  variable   = names(coef(lr_fold1_model)),
+  coef       = as.numeric(coef(lr_fold1_model)),
+  odds_ratio = as.numeric(exp(coef(lr_fold1_model)))
+) |>
+  filter(variable != "(Intercept)") |>
+  arrange(desc(abs(coef)))   # abs() on the numeric column, not the whole df
+
+print(round(coef_df[, c("coef", "odds_ratio")], 4))
+
+ggplot(coef_df, aes(x = reorder(variable, coef), y = coef,
+                    fill = coef > 0)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "tomato", "FALSE" = "steelblue"),
+                    labels = c("TRUE" = "Increases Fatal risk",
+                               "FALSE" = "Decreases Fatal risk")) +
+  labs(title = "Logistic Regression Coefficients — Fold 1",
+       subtitle = "Red = increases log-odds of Fatal; Blue = decreases",
+       x = NULL, y = "Coefficient", fill = NULL) +
+  theme_minimal()
+```
+
+
+Random Forest Variable Importance
+
+```{r}
+
+rf_imp <- res_rf$learners[[1]]$model$variable.importance
+importance_df <- data.frame(
+  variable   = names(rf_imp),
+  importance = as.numeric(rf_imp)
+) |> arrange(desc(importance))
+
+print(importance_df)
+
+ggplot(importance_df,
+       aes(x = reorder(variable, importance), y = importance)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Random Forest Variable Importance — Fold 1",
+       subtitle = "Gini impurity reduction summed across all 500 trees",
+       x = NULL, y = "Mean Decrease in Gini Impurity") +
+  theme_minimal()
+```
+
+
+
+```{r}
+
+pl_final_lr <- po("encode") %>>%
+  po(lrn("classif.log_reg", predict_type = "prob"))
+pl_final_lr$train(task_hf_lr)
+
+lrn_final_rf <- lrn("classif.ranger",
+                     predict_type = "prob",
+                     num.trees    = 500,
+                     importance   = "impurity")
+lrn_final_rf$train(task_hf)
+
+task_test_rf <- TaskClassif$new(
+  id = "HeartFailure_test", backend = test_data,
+  target = "fatal_mi", positive = "Fatal"
+)
+task_test_lr_obj <- TaskClassif$new(
+  id = "HeartFailure_test_LR", backend = test_data_lr,
+  target = "fatal_mi", positive = "Fatal"
+)
+
+pred_lr_test <- pl_final_lr$predict(task_test_lr_obj)[[1]]
+pred_rf_test <- lrn_final_rf$predict(task_test_rf)
+
+
+```
+
+
+Final Test Set Performance at Chosen Threshold
+
+```{r}
+# Reset to default threshold 0.5 for summary comparison
+pred_rf_test$set_threshold(0.5)
+pred_lr_test$set_threshold(0.5)
+
+metrics <- c("classif.auc", "classif.sensitivity", "classif.ce",
+             "classif.fnr", "classif.fpr")
+
+for (m in metrics) {
+  lr_val <- pred_lr_test$score(msr(m))
+  rf_val <- pred_rf_test$score(msr(m))
+  winner <- if ((m %in% c("classif.auc", "classif.sensitivity", "classif.acc")) &&
+                rf_val > lr_val) "RF" else
+             if ((m %in% c("classif.ce", "classif.fnr", "classif.fpr")) &&
+                 rf_val < lr_val) "RF" else "LR"
+  cat(sprintf("  %-30s  LR: %.3f   RF: %.3f   [%s]\n",
+              m, lr_val, rf_val, winner))
+}
+
+cat("\nLogistic Regression:\n")
+pred_lr_test$confusion
+
+cat("\nRandom Forest:\n")
+pred_rf_test$confusion
+
+```
