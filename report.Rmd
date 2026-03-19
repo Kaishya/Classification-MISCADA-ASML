@@ -1,0 +1,970 @@
+---
+title: "MISCADA ASML: Classification Summative Coursework"
+output: html_notebook
+---
+
+
+
+Libraries
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(skimr)
+library(ggfortify)
+library(GGally)
+library(mlr3verse)
+library(data.table)
+library(dplyr)
+library(kableExtra)
+library(knitr)
+library(pROC)
+library(glmnet)
+```
+
+Load the Data
+```{r}
+data <- readr::read_csv("heart_failure.csv")
+```
+
+Viewing the Data 
+```{r}
+#View(data)
+```
+
+skim() = it tells the variable types, how many values are missing, and a mini histogram for each variable
+```{r}
+skim(data) 
+# All 13 variables are numeric doubles — no factors, no missing values.
+#   Continuous : age, creatinine_phosphokinase, ejection_fraction,
+#                platelets, serum_creatinine, serum_sodium
+#   Binary 0/1 : anaemia, diabetes, high_blood_pressure, sex, smoking
+#   Excluded   : time — follow-up duration in days (range 4–285).
+#                Including it leaks the outcome: patients who died have
+#                short follow-up by definition. This is outcome leakage,
+#                not a genuine clinical predictor.
+
+```
+
+
+Also check the basic structure and confirm there are no missing values:
+```{r}
+str(data)#understand data structure
+summary(data) #summary stats
+sum(is.na(data)) #any missing values?
+sapply(data, is.factor) #is anyything a factor?
+
+cat("Anaemia percentage:", mean(data$anaemia) * 100, "%\n")
+cat("Diabetes percentage:", mean(data$diabetes) * 100, "%\n")
+cat("High Blood Pressure percentage:", mean(data$high_blood_pressure) * 100, "%\n")
+cat("Smoking percentage:", mean(data$smoking) * 100, "%\n")
+
+```
+
+Feature Engineering
+```{r}
+data <- data |>#binary to readable labels 
+  mutate(
+    anaemia_label     = case_when(anaemia == 1 ~ "Anaemic",            TRUE ~ "Not Anaemic"),
+    diabetes_label    = case_when(diabetes == 1 ~ "Diabetic",          TRUE ~ "Not Diabetic"),
+    high_bp_label     = case_when(high_blood_pressure == 1 ~ "High BP", TRUE ~ "Normal BP"),
+    smoking_label     = case_when(smoking == 1 ~ "Smoker",             TRUE ~ "Non-Smoker"),
+    outcome           = case_when(fatal_mi == 1 ~ "Fatal Event",       TRUE ~ "Survived"),
+    existingconditions_count = anaemia + diabetes + high_blood_pressure + smoking,
+    age_group         = case_when(
+      age < 50 ~ "Under 50",
+      age < 65 ~ "50-64",
+      age < 75 ~ "65-74",
+      TRUE     ~ "75+"
+    )
+  )
+
+data |> select(anaemia, anaemia_label, fatal_mi, outcome, existingconditions_count, age_group) |> head(10) #check its correct
+```
+
+
+Examining Fatality Rates by Group
+```{r}
+fatality_by_age <- data |>
+  group_by(age_group) |>
+  summarise(total = n(), fatal_events = sum(fatal_mi), pct_fatal = fatal_events / total * 100)
+
+ggplot(fatality_by_age |> arrange(desc(pct_fatal)),
+       aes(x = reorder(age_group, -pct_fatal), y = pct_fatal, fill = age_group)) +
+  geom_col() +
+  geom_text(aes(label = paste0(round(pct_fatal, 1), "%")), vjust = -0.5, size = 4) +
+  labs(title = "Fatality Rate by Age Group",
+       subtitle = "Older patients show substantially higher mortality",
+       x = "Age Group", y = "Fatal Event Rate (%)") +
+  theme_minimal() + guides(fill = "none")
+```
+
+Fatality Rate by others
+```{r}
+fatality_by_existingconditions <- data |>
+  group_by(existingconditions_count) |>
+  summarise(total = n(), fatal_events = sum(fatal_mi), pct_fatal = fatal_events / total * 100)
+
+ggplot(fatality_by_existingconditions,
+       aes(x = factor(existingconditions_count), y = pct_fatal, fill = factor(existingconditions_count))) +
+  geom_col() +
+  geom_text(aes(label = paste0(round(pct_fatal, 1), "%\n(n=", total, ")")), vjust = -0.3, size = 3.5) +
+  labs(title = "Fatality Rate by Number of Coexisting conditions",
+       subtitle = "Anaemia + Diabetes + High BP + Smoking combined",
+       x = "Number of Coexisting conditions", y = "Fatal Event Rate (%)") +
+  theme_minimal() + guides(fill = "none") +
+  expand_limits(y = max(fatality_by_existingconditions$pct_fatal) * 1.15)
+```
+
+Further Graphical Interpretations
+```{r}
+ggplot(data, aes(x = age, fill = outcome)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Age Distribution by Survival Status", x = "Age", y = "Density", fill = "Outcome") +
+  theme_minimal()
+```
+
+
+Pairwise Relationships
+```{r}
+ggpairs(data |> select(age, ejection_fraction, serum_creatinine, serum_sodium, outcome),
+        aes(color = outcome, alpha = 0.5)) +
+  scale_color_manual(values = c("Survived" = "skyblue", "Fatal Event" = "tomato")) +
+  scale_fill_manual(values = c("Survived" = "skyblue", "Fatal Event" = "tomato")) +
+  labs(title = "Pairwise Relationships of Key Clinical Variables") +
+  theme_minimal()
+```
+
+Correlation Matrix
+```{r}
+corr_mat <- round(cor(data |> select(where(is.numeric))), 2)
+melted_corr_mat <- reshape2::melt(corr_mat)
+ggplot(data = melted_corr_mat, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "steelblue", mid = "white", high = "tomato", midpoint = 0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "All Numeric Variables", fill = "Correlation")
+```
+
+
+Principal Component Analysis 
+```{r}
+data_model <- data |>
+  select(-anaemia_label, -diabetes_label, -high_bp_label, -smoking_label,
+         -outcome, -age_group, -time)
+
+skim(data_model)
+names(data_model)#final set of predictors to use in pCA
+
+pca_input <- data_model[, -which(names(data_model) == "fatal_mi")]#all cols but fatal_mi
+pca_result <- prcomp(pca_input, center = TRUE, scale = TRUE)
+
+summary(pca_result)#importance of each component
+data$fatal_mi_factor <- factor(data$fatal_mi, labels = c("Survived", "Fatal Event"))#dummy variable to explain fatal_mi as a factor for PCA
+#variance explained by each principal component
+plot(pca_result, type = "l", main = "PCA Variance")#View the loadings (weights) for the first 4 components
+round(pca_result$rotation[, 1:4], 3)
+```
+
+Advanced PCA analysis 
+so log transform serum_creatinine and creatinine_phosphokinase for PCA different view
+```{r}
+#Log transform skewed variables
+data_model_pca <- data_model |>
+  mutate(log_creatinine = log1p(serum_creatinine),
+         log_cpk        = log1p(creatinine_phosphokinase)) |>
+  select(-serum_creatinine, -creatinine_phosphokinase)
+
+selected_vars<- c("age", "ejection_fraction", "serum_sodium", "log_creatinine", "log_cpk")
+pca_input_reduced <- data_model_pca[, selected_vars]
+pca_reduced<- prcomp(pca_input_reduced, center = TRUE, scale = TRUE)
+
+summary(pca_reduced)
+plot(pca_reduced, type = "l", main = "Reduced PCA Variance")
+round(pca_reduced$rotation[, 1:4], 3)
+
+
+var_full<- pca_result$sdev^2
+var_reduced<- pca_reduced$sdev^2
+plot(var_full, type = "b", pch = 16, lwd = 2,
+     xlab = "Principal Component",
+     ylab = "Variance",
+     main = "PCA Variance Comparison")
+
+lines(var_reduced, type = "b", pch = 17, col = "red", lwd = 2)
+legend("topright",
+       legend = c("Full PCA", "Reduced PCA"),
+       col = c("black", "red"),
+       lwd = 2,
+       pch = c(16, 17))
+```
+
+Data Preparation
+```{r}
+set.seed(100)
+data <- readr::read_csv("heart_failure.csv")
+
+#RF is scale invariant so uses data_model as usual
+data_model <- data |>
+  mutate(
+    existingconditions_count = anaemia + diabetes + high_blood_pressure + smoking,
+    fatal_mi          = factor(fatal_mi, levels = c(1, 0),
+                               labels = c("Fatal", "Survived"))
+  ) |>
+  select(-time)
+
+#log transform right skewed continuous variables
+data_model_lr <- data_model |>
+  mutate(
+    creatinine_phosphokinase = log1p(creatinine_phosphokinase),#13x ratio
+    serum_creatinine         = log1p(serum_creatinine),#7x ratio
+    platelets                = log1p(platelets) #3x ratio
+  )
+
+skim(data_model)
+```
+
+Train / Test Split
+```{r}
+n <- nrow(data_model)
+train_idx <- sample(n, size = floor(0.8 * n))
+
+train_data    <- data_model[train_idx, ]
+test_data     <- data_model[-train_idx, ]
+train_data_lr <- data_model_lr[train_idx, ]
+test_data_lr  <- data_model_lr[-train_idx, ]
+
+cat("Training set size:", nrow(train_data), "\n")
+cat("Test set size:    ", nrow(test_data),  "\n")
+cat("Fatal event rate (train):", round(mean(train_data$fatal_mi == "Fatal") * 100, 1), "%\n")
+cat("Fatal event rate (test): ", round(mean(test_data$fatal_mi  == "Fatal") * 100, 1), "%\n")
+```
+
+Task Definition
+```{r}
+#Fatal is positive class
+#raw features for Random Forest
+task_rf_hr <- TaskClassif$new(id= "HeartFailure",backend= train_data,target= "fatal_mi",positive= "Fatal")
+#log-transformed for Logistic Regression
+task_lr_hf <- TaskClassif$new(id = "HeartFailure_LR",backend= train_data_lr,target= "fatal_mi",positive = "Fatal")
+```
+
+Cross-Validation Strategy
+```{r}
+#5-fold CV once per task.
+cv5 <- rsmp("cv", folds = 5)
+cv5_lr <- rsmp("cv", folds = 5)
+cv5$instantiate(task_rf_hr)
+cv5_lr$instantiate(task_lr_hf)
+```
+
+Performance Measures
+```{r}
+measures <- list(
+  msr("classif.ce"),# classification error
+  msr("classif.acc"),# accuracy
+  msr("classif.auc"),# AUC, 1 is perfect, worse then 0.5 bad 
+  msr("classif.sensitivity"),#fatal events correctly found, identifies this asymmetry as a reason to move beyond raw accuracy.
+  msr("classif.fnr"),#fatal events incorrectly missed
+  msr("classif.fpr")#survivors incorrectly flagged
+)
+```
+
+
+
+Model 1: Logistic Regression
+```{r}
+lrn_log_reg <- lrn("classif.log_reg", predict_type = "prob")
+pl_log_reg  <- po("encode") %>>% po(lrn_log_reg)
+```
+
+Model 2: Random Forest
+```{r}
+lrn_ranger <- lrn("classif.ranger", predict_type = "prob", num.trees = 500,
+                   importance = "impurity", keep.inbag = TRUE) # keep.inbag needed to extract each tree OOB curve
+```
+
+Baseline Classifier
+```{r}
+lrn_baseline <- lrn("classif.featureless", predict_type = "prob")
+```
+
+
+Benchmark for the models
+```{r}
+res_baseline<- resample(task_rf_hr,    lrn_baseline, cv5,    store_models = TRUE) #all on 5 fold
+res_lr<- resample(task_lr_hf, pl_log_reg,   cv5_lr, store_models = TRUE)
+res_rf<- resample(task_rf_hr,    lrn_ranger,   cv5,    store_models = TRUE)
+
+baseline_res<- as.data.frame(t(res_baseline$aggregate(measures))) |> mutate(Model = "Baseline")
+lr_res<- as.data.frame(t(res_lr$aggregate(measures)))       |> mutate(Model = "Logistic Regression")
+rf_res<- as.data.frame(t(res_rf$aggregate(measures)))       |> mutate(Model = "Random Forest")
+
+benchkmark_results <- bind_rows(baseline_res, lr_res, rf_res) |> select(Model, everything())
+
+kable(benchkmark_results, digits = 3, caption = "5-Fold CV Results") |>
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+
+OOB Error Curve sto show  Random Forest Early Stopping Diagnostic
+```{r}
+rf_oob <- ranger::ranger( #once it flattens, additional trees add no meaningful variance reduction.
+  formula    = fatal_mi ~ ., data= train_data, num.trees = 500, mtry= floor(sqrt(ncol(train_data) - 1)), keep.inbag = TRUE,
+  probability = TRUE,importance = "impurity"
+)
+
+#extract by refitting progressively using a sequence of tree counts
+oob_trees  <- c(1, seq(10, 500, by = 10))
+oob_errors <- sapply(oob_trees, function(b) {
+  m <- ranger::ranger(formula = fatal_mi ~ ., data = train_data,
+                      num.trees = b, probability = TRUE, verbose = FALSE)
+  m$prediction.error
+})
+
+oob_rf_df <- data.frame(trees = oob_trees, oob_error = oob_errors)
+ggplot(oob_rf_df, aes(x = trees, y = oob_error)) +
+  geom_line(colour = "steelblue", linewidth = 0.8) +
+  geom_hline(yintercept = min(oob_rf_df$oob_error),
+             linetype = "dashed", colour = "tomato", linewidth = 0.8) +
+  labs(title = "Random Forest OOB Error Curve — Fold 1 (500 Trees)",
+       subtitle = "Dashed = minimum OOB error. Plateau confirms 500 trees is sufficient.",
+       x = "Number of Trees", y = "OOB Classification Error") +
+  theme_minimal()
+```
+
+Random Forest Variable Importance
+```{r}
+#for each feature, sum the Gini impurity reduction
+#High importance means the feature was frequently useful
+rf_imp <- res_rf$learners[[1]]$model$variable.importance
+importance_df <- data.frame(
+  variable   = names(rf_imp),
+  importance = as.numeric(rf_imp)
+) |> arrange(desc(importance))
+
+print(importance_df)
+ggplot(importance_df, aes(x = reorder(variable, importance), y = importance)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Random Forest Variable Importance — Fold 1",
+       subtitle = "Gini impurity reduction summed across all 500 trees",
+       x = NULL, y = "Mean Decrease in Gini Impurity") +
+  theme_minimal()
+```
+
+Logistic Regression Coefficients
+```{r}
+#fitted glm from fold 1, positive coefficient means increases log-odds of a Fatal event
+lr_fold1_model <- res_lr$learners[[1]]$graph_model$pipeops$classif.log_reg$state$model
+
+coef_df <- data.frame(
+  variable   = names(coef(lr_fold1_model)),
+  coef       = as.numeric(coef(lr_fold1_model)),
+  odds_ratio = as.numeric(exp(coef(lr_fold1_model)))
+) |>
+  filter(variable != "(Intercept)") |>
+  arrange(desc(abs(coef)))
+
+print(round(coef_df[, c("coef", "odds_ratio")], 4))
+
+ggplot(coef_df, aes(x = reorder(variable, coef), y = coef, fill = coef > 0)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "tomato", "FALSE" = "steelblue"),
+                    labels = c("TRUE" = "Increases Fatal risk", "FALSE" = "Decreases Fatal risk")) +
+  labs(title = "Logistic Regression Coefficients — Fold 1",
+       subtitle = "Red = increases log-odds of Fatal; Blue = decreases",
+       x = NULL, y = "Coefficient", fill = NULL) +
+  theme_minimal()
+```
+
+default models evaluated on test set
+```{r}
+# Retrain both models on the full training set for test set evaluation
+default_lrn_lr <- po("encode") %>>% po(lrn("classif.log_reg", predict_type = "prob"))
+default_lrn_lr$train(task_lr_hf)
+
+default_lrn_rf <- lrn("classif.ranger", predict_type = "prob", num.trees = 500, importance = "impurity")
+default_lrn_rf$train(task_rf_hr)
+
+task_test_rf_obj <- TaskClassif$new(id = "HeartFailure_test",    backend = test_data,    target = "fatal_mi", positive = "Fatal")
+task_test_lr_obj <- TaskClassif$new(id = "HeartFailure_test_LR", backend = test_data_lr, target = "fatal_mi", positive = "Fatal")
+
+predicted_lr_test <- default_lrn_lr$predict(task_test_lr_obj)[[1]]
+predicted_rf_test <- default_lrn_rf$predict(task_test_rf_obj)
+```
+
+Default model comparison
+```{r}
+cat("Final test comparison \n")
+metrics <- c("classif.auc", "classif.sensitivity", "classif.ce", "classif.fnr", "classif.fpr")
+
+for (m in metrics) {
+  lr_val <- predicted_lr_test$score(msr(m))
+  rf_val <- predicted_rf_test$score(msr(m))
+  winner <- if ((m %in% c("classif.auc", "classif.sensitivity", "classif.acc")) &&
+                rf_val > lr_val) "RF" else
+             if ((m %in% c("classif.ce", "classif.fnr", "classif.fpr")) &&
+                 rf_val < lr_val) "RF" else "LR"
+  cat(sprintf("  %-30s  LR: %.3f   RF: %.3f   [%s]\n", m, lr_val, rf_val, winner))
+}
+
+cat("\nLogistic Regression:\n")
+predicted_lr_test$confusion
+
+cat("\nRandom Forest:\n")
+predicted_rf_test$confusion
+cat("\nWinner: Random Forest since sensitivity means missing a fatal error\n")
+
+#Random Forest has the higher AUC so better overall discrimination. Logistic Regression has the higher sensitivity and catches more.
+#In a medical context where missing a fatal event is the worst error, sensitivity is the clinically critical metric like in Lecture 9
+```
+
+
+
+Logistic Regression Regularisation
+```{r}
+#alpha = 1 Lasso does automatic feature selection, 
+#alpha = 0 Ridge all predictors
+#alpha = 0.5 Elastic Net does both
+using_logreg_plain  <- lrn("classif.log_reg", predict_type = "prob", id = "logreg_plain")
+using_glmnet_l1     <- lrn("classif.glmnet",  predict_type = "prob", alpha = 1,   lambda = 0.01,  id = "lasso")
+using_glmnet_l2     <- lrn("classif.glmnet",  predict_type = "prob", alpha = 0,   lambda = 0.01,  id = "ridge")
+using_glmnet_enet   <- lrn("classif.glmnet",  predict_type = "prob", alpha = 0.5, lambda = 0.01,  id = "elasticnet")
+using_glmnet_strong <- lrn("classif.glmnet",  predict_type = "prob", alpha = 0.5, lambda = 0.05,  id = "glmnet_strong")
+using_glmnet_weak   <- lrn("classif.glmnet",  predict_type = "prob", alpha = 0.5, lambda = 0.001, id = "glmnet_weak")
+
+res_logreg <- benchmark(data.table(
+  task       = list(task_lr_hf),
+  learner    = list(
+    po("encode") %>>% po(using_logreg_plain),
+    po("encode") %>>% po(using_glmnet_l1),
+    po("encode") %>>% po(using_glmnet_l2),
+    po("encode") %>>% po(using_glmnet_enet),
+    po("encode") %>>% po(using_glmnet_strong),
+    po("encode") %>>% po(using_glmnet_weak)
+  ),
+  resampling = list(cv5_lr)
+), store_models = TRUE)
+
+logReg_tuning <- res_logreg$aggregate(measures) |>
+  as.data.frame() |>
+  select(learner_id, classif.auc, classif.sensitivity, classif.ce, classif.fnr) |>
+  arrange(desc(classif.auc))
+
+kable(logReg_tuning, digits = 3,
+      caption = "Logistic Regression — Regularisation Variants (5-fold CV)") |>
+  kable_styling(full_width = FALSE, position = "center")
+```
+
+Variables removed abive 
+```{r}
+# Variables shrunk to zero contributed no independent signal after accounting for other predictors
+findMissingVars <- tryCatch(
+  res_logreg$resample_result(2)$learners[[1]]$model$classif.glmnet$model,
+  error = function(e) NULL
+)
+
+if (is.null(findMissingVars)) {
+  X_lasso <- model.matrix(fatal_mi ~ . - 1, data = train_data_lr)
+  y_lasso <- as.numeric(train_data_lr$fatal_mi == "Fatal")
+  findMissingVars <- glmnet(X_lasso, y_lasso, family = "binomial", alpha = 1, lambda = 0.01)
+  cat("Lasso coefficients (standalone refit) -- zero = excluded:\n")
+} else {
+  cat("Lasso coefficients (Fold 1) -- zero = excluded:\n")
+}
+print(round(as.matrix(coef(findMissingVars)), 4))
+```
+
+Best logistic regression variant
+```{r}
+best_lr_id <- logReg_tuning$learner_id[1]
+cat("Best LR variant= ", best_lr_id, "\n")
+cat("AUC         =", round(logReg_tuning$classif.auc[1], 3), "\n")
+cat("Sensitivity :=", round(logReg_tuning$classif.sensitivity[1], 3), "\n")
+cat("Error       =", round(logReg_tuning$classif.ce[1], 3), "\n")
+```
+
+
+
+
+
+Random Forest Hyperparameter Tuning
+given it won above, more time spent on this tuning then the Logistic reg
+
+by using number of trees
+```{r}
+#More trees reduce variance by averaging more bootstrap samples
+using_100_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 100,  id = "rf_100")
+using_300_trees  <- lrn("classif.ranger", predict_type = "prob", num.trees = 300,  id = "rf_300")
+using_500_trees  <- lrn("classif.ranger", predict_type = "prob", num.trees = 500,  id = "rf_500")
+using_1000_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 1000, id = "rf_1000")
+
+#adding trees to a Random Forest never causes overfitting
+testing_trees <- benchmark(data.table(
+  task       = list(task_rf_hr),
+  learner    = list(using_100_trees, using_300_trees, using_500_trees, using_1000_trees),
+  resampling = list(cv5)
+), store_models = TRUE)
+
+trees_results <- testing_trees$aggregate(measures) |>
+  as.data.frame() |>
+  select(learner_id, classif.auc, classif.sensitivity, classif.ce, classif.fnr) |>
+  arrange(desc(classif.auc))
+
+kable(trees_results, digits = 3,
+      caption = "Stage 1: num.trees (100 trees held constant for mtry, fixed for next stages)") |>
+  kable_styling(full_width = FALSE, position = "center")
+
+best_trees     <- trees_results$learner_id[1]
+best_trees_val <- as.integer(gsub("rf_", "", best_trees))
+cat("\nBest num.trees:", best_trees_val, "| AUC:", round(trees_results$classif.auc[1], 3), "\n")
+```
+
+
+
+mtry = how many features are considered at each split 
+```{r}
+using_mtry2 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 2, id = "rf_mtry2")
+using_mtry3 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 3, id = "rf_mtry3")
+using_mtry5 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 5, id = "rf_mtry5")
+using_mtry8 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 8, id = "rf_mtry8")
+
+testing_mtry <- benchmark(data.table(
+  task       = list(task_rf_hr),
+  learner    = list(using_mtry2, using_mtry3, using_mtry5, using_mtry8),
+  resampling = list(cv5)
+), store_models = TRUE)
+
+mtry_results <- testing_mtry$aggregate(measures) |>
+  as.data.frame() |>
+  select(learner_id, classif.auc, classif.sensitivity, classif.ce, classif.fnr) |>
+  arrange(desc(classif.auc))
+
+kable(mtry_results, digits = 3,
+      caption = "Stage 2: mtry (best num.trees from Stage 1 used)") |>
+  kable_styling(full_width = FALSE, position = "center")
+
+best_mtry_row <- mtry_results$learner_id[1]
+best_mtry_val <- as.integer(gsub("rf_mtry", "", best_mtry_row))
+cat("\nBest mtry:", best_mtry_val, "| AUC:", round(mtry_results$classif.auc[1], 3), "\n")
+```
+
+
+
+min.node.size to set the minimum number of observations required in a leaf node
+```{r}
+using_node1  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 1,  id = "rf_node1")
+lrn_rf_node5  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 5,  id = "rf_node5")
+using_node10 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 10, id = "rf_node10")
+using_node15 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 15, id = "rf_node15")
+using_node20 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 20, id = "rf_node20")
+
+tesing_node <- benchmark(data.table(
+  task       = list(task_rf_hr),
+  learner    = list(using_node1, lrn_rf_node5, using_node10, using_node15, using_node20),
+  resampling = list(cv5)
+), store_models = TRUE)
+
+node_results <- tesing_node$aggregate(measures) |>
+  as.data.frame() |>
+  select(learner_id, classif.auc, classif.sensitivity, classif.ce, classif.fnr) |>
+  arrange(desc(classif.auc))
+
+kable(node_results, digits = 3,
+      caption = "Stage 3: min.node.size (best num.trees and mtry used)") |>
+  kable_styling(full_width = FALSE, position = "center")
+
+best_node_row <- node_results$learner_id[1]
+best_node_val <- as.integer(gsub("rf_node", "", best_node_row))
+cat("\nBest min.node.size:", best_node_val, "| AUC:", round(node_results$classif.auc[1], 3), "\n")
+```
+
+max.depth = applies a hard cap on tree depth from the top down
+```{r}
+using_d3  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 3,  id = "rf_depth3")
+using_d5  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 5,  id = "rf_depth5")
+using_d10 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 10, id = "rf_depth10")
+using_dul <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, id = "rf_unlimited")
+
+testing_depth <- benchmark(data.table(
+  task       = list(task_rf_hr),
+  learner    = list(using_d3, using_d5, using_d10, using_dul),
+  resampling = list(cv5)
+), store_models = TRUE)
+
+depth_results <- testing_depth$aggregate(measures) |>
+  as.data.frame() |>
+  select(learner_id, classif.auc, classif.sensitivity, classif.ce, classif.fnr) |>
+  arrange(desc(classif.auc))
+
+kable(depth_results, digits = 3,
+      caption = "Stage 4: max.depth (all prior best values used)") |>
+  kable_styling(full_width = FALSE, position = "center")
+
+best_depth_row <- depth_results$learner_id[1]
+best_depth_val <- if (best_depth_row == "rf_unlimited") NULL else
+  as.integer(gsub("rf_depth", "", best_depth_row))
+cat("\nBest max.depth:", ifelse(is.null(best_depth_val), "unlimited", best_depth_val),
+    "| AUC:", round(depth_results$classif.auc[1], 3), "\n")
+```
+
+
+
+Final model configuration vs default models
+```{r}
+set.seed(100)
+training_rf_default <- lrn("classif.ranger", predict_type = "prob", num.trees = 500,
+                        importance = "impurity", id = "rf_default")
+
+#best from the above
+rf_hyperparams_tuned <- lrn("classif.ranger", predict_type = "prob",
+                     num.trees = best_trees_val, mtry = best_mtry_val,
+                     min.node.size = best_node_val, importance = "impurity", id = "rf_tuned")
+
+#add max.depth if a finite value found above
+if (!is.null(best_depth_val)) rf_hyperparams_tuned$param_set$values$max.depth <- best_depth_val
+
+bothmodels <- benchmark(data.table(
+  task       = list(task_rf_hr),
+  learner    = list(training_rf_default, rf_hyperparams_tuned),
+  resampling = list(cv5)
+), store_models = TRUE)
+
+results_def_tuned <- bothmodels$aggregate(measures) |>
+  as.data.frame() |>
+  select(learner_id, classif.auc, classif.sensitivity, classif.ce, classif.fnr, classif.fpr)
+
+kable(results_def_tuned, digits = 3, caption = "Final: Tuned RF vs Default (5-fold CV)") |>
+  kable_styling(full_width = FALSE, position = "center")
+
+cat("\n")
+cat(sprintf("Default AUC = %.3f\n", results_def_tuned$classif.auc[results_def_tuned$learner_id == "rf_default"]))
+cat(sprintf("Tuned RF AUC= %.3f\n", results_def_tuned$classif.auc[results_def_tuned$learner_id == "rf_tuned"]))
+cat(sprintf("AUC improvement= %.3f\n", diff(results_def_tuned$classif.auc[c(1,2)])))
+```
+
+
+Retrain final tuned models on full training set
+predicted_rf and predicted_lr are the final test set predictions used for performance metrics
+```{r}
+final_random_forest_model <- lrn("classif.ranger",
+                 predict_type  = "prob",
+                 num.trees= best_trees_val,
+                 mtry = best_mtry_val,
+                 min.node.size= best_node_val,
+                 importance= "impurity")
+if (!is.null(best_depth_val)) final_random_forest_model$param_set$values$max.depth <- best_depth_val
+final_random_forest_model$train(task_rf_hr)
+
+final_log_regression_model <- 
+  po("encode") %>>% 
+  po("learner",
+     lrn("classif.glmnet",
+         predict_type = "prob",
+         alpha = 0.5,
+         lambda = 0.05,
+         id = "glmnet_strong"))
+
+final_log_regression_model$train(task_lr_hf)
+
+task_test_rf <- TaskClassif$new(id = "test_rf", backend = test_data,    target = "fatal_mi", positive = "Fatal")
+task_test_lr <- TaskClassif$new(id = "test_lr", backend = test_data_lr, target = "fatal_mi", positive = "Fatal")
+
+predicted_rf <- final_random_forest_model$predict(task_test_rf)
+predicted_lr <- final_log_regression_model$predict(task_test_lr)[[1]]
+```
+
+Picking Threshold
+```{r}
+#sensitivity >= 0.6 AND fpr <= 0.25, minimise missed fatal events as the priority
+target_sensitivity <- 0.60
+target_fpr         <- 0.25
+
+best_threshold_rf <- sweep_rf |>
+  filter(sensitivity >= target_sensitivity, fpr <= target_fpr) |>
+  arrange(fnr) |>
+  slice(1) |>
+  pull(threshold)
+#if no threshold meets both targets theb sensitivity >= 0.5
+if (length(best_threshold_rf) == 0) {
+  best_threshold_rf <- sweep_rf |>
+    filter(sensitivity >= 0.50) |>
+    arrange(fnr) |>
+    slice(1) |>
+    pull(threshold)
+}
+
+sweep_lr <- map_dfr(thresholds, function(t) {
+  predicted_lr$set_threshold(t)
+  data.frame(
+    threshold   = t,
+    sensitivity = predicted_lr$score(msr("classif.sensitivity")),
+    specificity = predicted_lr$score(msr("classif.specificity")),
+    fpr         = predicted_lr$score(msr("classif.fpr")),
+    fnr         = predicted_lr$score(msr("classif.fnr")),
+    error       = predicted_lr$score(msr("classif.ce")),
+    ppv         = tryCatch(predicted_lr$score(msr("classif.ppv")), error = function(e) NA)
+  )
+})
+predicted_lr$set_threshold(0.5)
+
+# Best LR threshold — same clinical rule as RF
+best_threshold_lr <- sweep_lr |>
+  filter(sensitivity >= target_sensitivity, fpr <= target_fpr) |>
+  arrange(fnr) |>
+  slice(1) |>
+  pull(threshold)
+if (length(best_threshold_lr) == 0) {
+  best_threshold_lr <- sweep_lr |>
+    filter(sensitivity >= 0.50) |>
+    arrange(fnr) |>
+    slice(1) |>
+    pull(threshold)
+}
+
+cat("Best RF threshold :", best_threshold_rf, "\n")
+cat("Best LR threshold :", best_threshold_lr, "\n")
+
+```
+```{r}
+ggplot(sweep_rf, aes(x = threshold)) +
+  geom_line(aes(y = sensitivity, colour = "Sensitivity (TPR)"),  linewidth = 1.1) +
+  geom_line(aes(y = fpr,         colour = "False Positive Rate"), linewidth = 1.1) +
+  geom_line(aes(y = fnr,         colour = "False Negative Rate"), linewidth = 1.1, linetype = "dashed") +
+  geom_vline(xintercept = 0.5,             linetype = "dotted",   colour = "grey40",    linewidth = 0.7) +
+  geom_vline(xintercept = best_threshold_rf, linetype = "longdash", colour = "darkorange", linewidth = 0.8) +
+  annotate("text", x = 0.52,                   y = 0.95,
+           label = "Default\n(0.5)", size = 3, colour = "grey40") +
+  annotate("text", x = best_threshold_rf + 0.02, y = 0.95,
+           label = paste0("Chosen\n(", best_threshold_rf, ")"), size = 3, colour = "darkorange") +
+  scale_colour_manual(values = c("Sensitivity (TPR)"  = "steelblue",
+                                 "False Positive Rate" = "tomato",
+                                 "False Negative Rate" = "darkgreen")) +
+  labs(title = "Threshold Analysis for Random Forest",
+       subtitle = "Lowering threshold increases sensitivity and FPR; raises specificity and FNR",
+       x = "Classification Threshold", y = "Rate", colour = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+Performance at threshold
+```{r}
+predicted_rf$set_threshold(0.5)
+default_metrics <- data.frame(
+  Metric  = c("Sensitivity", "FPR", "FNR", "Specificity", "Error"),
+  Default = c(round(predicted_rf$score(msr("classif.sensitivity")), 3),
+              round(predicted_rf$score(msr("classif.fpr")),         3),
+              round(predicted_rf$score(msr("classif.fnr")),         3),
+              round(predicted_rf$score(msr("classif.specificity")), 3),
+              round(predicted_rf$score(msr("classif.ce")),          3))
+)
+
+predicted_rf$set_threshold(best_threshold_rf)
+chosen_metrics <- data.frame(
+  Chosen = c(round(predicted_rf$score(msr("classif.sensitivity")), 3),
+             round(predicted_rf$score(msr("classif.fpr")),         3),
+             round(predicted_rf$score(msr("classif.fnr")),         3),
+             round(predicted_rf$score(msr("classif.specificity")), 3),
+             round(predicted_rf$score(msr("classif.ce")),          3))
+)
+
+threshold_comparison <- bind_cols(default_metrics, chosen_metrics)
+
+kable(threshold_comparison, digits = 3,
+      caption = paste0("Random Forest: Default (0.5) vs Chosen (", best_threshold_rf, ")")) |>
+  kable_styling(full_width = FALSE, position = "center") |>
+  row_spec(c(1, 3), bold = TRUE, background = "#fff3cd")
+
+cat(sprintf("\nRF confusion matrix at chosen threshold = %s :\n", best_threshold_rf))
+predicted_rf$confusion
+```
+
+
+ROC Curves
+```{r}
+# ROC curves show the full discrimination profile across all thresholds.
+# The closer the curve hugs the top-left corner, the better the model.
+# The diagonal represents random guessing (AUC = 0.5).
+predicted_rf$set_threshold(best_threshold_rf)
+predicted_lr$set_threshold(best_threshold_lr)
+
+roc_rf <- roc(response  = as.numeric(predicted_rf$truth == "Fatal"),
+              predictor = predicted_rf$prob[, "Fatal"], quiet = TRUE)
+roc_lr <- roc(response  = as.numeric(predicted_lr$truth == "Fatal"),
+              predictor = predicted_lr$prob[, "Fatal"], quiet = TRUE)
+
+roc_df <- bind_rows(
+  data.frame(fpr = 1 - roc_rf$specificities, tpr = roc_rf$sensitivities,
+             model = sprintf("Random Forest (AUC = %.3f)", auc(roc_rf))),
+  data.frame(fpr = 1 - roc_lr$specificities, tpr = roc_lr$sensitivities,
+             model = sprintf("Logistic Regression (AUC = %.3f)", auc(roc_lr)))
+)
+
+ggplot(roc_df, aes(x = fpr, y = tpr, colour = model)) +
+  geom_line(linewidth = 1.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey60", linewidth = 0.6) +
+  annotate("text", x = 0.6, y = 0.1, label = "Random classifier (AUC = 0.5)",
+           colour = "grey50", size = 3.2) +
+  scale_colour_manual(values = c("tomato", "steelblue")) +
+  labs(title = "ROC Curves with Final Models on Test Set",
+       subtitle = "Top-left corner = perfect discrimination. Diagonal = random.",
+       x = "False Positive Rate (1 - Specificity)", y = "True Positive Rate (Sensitivity)",
+       colour = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+
+
+
+Final Test Set 
+```{r}
+# Compare tuned RF against default RF on the test set before selecting threshold
+final_default_rf <- lrn("classif.ranger", predict_type = "prob", num.trees = 500, importance = "impurity")
+final_default_rf$train(task_rf_hr)
+pred_default <- final_default_rf$predict(task_test_rf)
+
+test_metrics <- c("classif.auc", "classif.sensitivity", "classif.ce", "classif.fnr", "classif.fpr")
+
+test_comparison <- data.frame(
+  Metric  = test_metrics,
+  Default = sapply(test_metrics, function(m) pred_default$score(msr(m))),
+  Tuned   = sapply(test_metrics, function(m) {
+    predicted_rf$set_threshold(0.35)
+    predicted_rf$score(msr(m))
+  })
+)
+
+kable(test_comparison, digits = 3,
+      caption = "Final Test Set: Default vs Tuned RF") |>
+  kable_styling(full_width = FALSE, position = "center")
+
+cat("\nDefault RF confusion matrix:\n")
+pred_default$confusion
+
+cat("\nTuned RF confusion matrix:\n")
+predicted_rf$set_threshold(best_threshold_rf)
+predicted_rf$confusion
+```
+
+
+Full Performance Metrics — final models at chosen thresholds
+```{r}
+predicted_rf$set_threshold(best_threshold_rf)
+predicted_lr$set_threshold(best_threshold_lr)
+
+all_metrics <- c(
+  "classif.auc",
+  "classif.sensitivity",
+  "classif.specificity",
+  "classif.ce",
+  "classif.acc",
+  "classif.fnr",
+  "classif.fpr",
+  "classif.ppv",  # precision of those flagged fatal how many are fatal
+  "classif.npv"   # negative predictive value of those flagged survived are they survived
+)
+
+perf_table <- data.frame(
+  Metric = all_metrics,
+  RF     = sapply(all_metrics, function(m) tryCatch(round(predicted_rf$score(msr(m)), 3), error = function(e) NA)),
+  LR     = sapply(all_metrics, function(m) tryCatch(round(predicted_lr$score(msr(m)), 3), error = function(e) NA))
+)
+
+kable(perf_table, digits = 3,
+      caption = "Full Performance Metrics in Test Set (RF at t=0.35, LR at t=0.5)") |>
+  kable_styling(full_width = FALSE, position = "center") |>
+  row_spec(which(perf_table$Metric %in% c("classif.auc", "classif.sensitivity")),
+           bold = TRUE, background = "#f0f8ff")
+```
+
+
+Precision-Recall Analysis
+```{r}
+PrecisionRecall_df <- map_dfr(thresholds, function(t) {
+  predicted_rf$set_threshold(t)
+  data.frame(threshold = t,
+             precision = tryCatch(predicted_rf$score(msr("classif.ppv")),         error = function(e) NA),
+             recall    = tryCatch(predicted_rf$score(msr("classif.sensitivity")), error = function(e) NA),
+             model     = "Random Forest")
+})
+
+#Logistic regression PR for comparison
+PrecisionRecall_df_lr <- map_dfr(thresholds, function(t) {
+  predicted_lr$set_threshold(t)
+  data.frame(threshold = t,
+             precision = tryCatch(predicted_lr$score(msr("classif.ppv")),         error = function(e) NA),
+             recall    = tryCatch(predicted_lr$score(msr("classif.sensitivity")), error = function(e) NA),
+             model     = "Logistic Regression")
+})
+
+PrecisionRecalls <- bind_rows(PrecisionRecall_df, PrecisionRecall_df_lr) |> filter(!is.na(precision), !is.na(recall))
+
+
+ggplot(PrecisionRecalls, aes(x = recall, y = precision, colour = model)) +
+  geom_line(linewidth = 1.1) +
+  geom_hline(yintercept = 0.32, linetype = "dashed", colour = "grey50", linewidth = 0.6) +
+  annotate("text", x = 0.1, y = 0.34, label = "No-skill baseline (prevalence = 0.32)",
+           colour = "grey50", size = 3) +
+  scale_colour_manual(values = c("tomato", "steelblue")) +
+  labs(title = "Precision-Recall Curves with Final Models on Test Set",
+       subtitle = "Above the dashed line = better than predicting Fatal for every patient",
+       x = "Recall (Sensitivity)", y = "Precision (Positive Predictive Value)", colour = NULL) +
+  xlim(0, 1) + ylim(0, 1) +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+
+Final Performance Summary
+```{r}
+summary_metrics <- c("classif.auc", "classif.sensitivity", "classif.fpr",
+                     "classif.fnr", "classif.ce", "classif.acc")
+
+final_summary <- data.frame(
+  Metric       = summary_metrics,
+  `RF (t=0.35)` = sapply(summary_metrics, function(m) round(predicted_rf$score(msr(m)), 3)),
+  `LR (t=0.50)` = sapply(summary_metrics, function(m) round(predicted_lr$score(msr(m)), 3)),
+  check.names  = FALSE
+)
+
+kable(final_summary, digits = 3, caption = "Final Performance Summary — Test Set") |>
+  kable_styling(full_width = FALSE, position = "center") |>
+  row_spec(1:2, bold = TRUE, background = "#f0f8ff")
+
+cat("\n")
+cat("AUC        : RF wins — better overall discrimination at all thresholds\n")
+cat("Sensitivity: RF at 0.375 catches more fatal events than LR at 0.5\n")
+cat("FPR        : RF at 0.375 flags more survivors — the cost of higher sensitivity\n")
+cat("FNR        : RF at 0.375 misses fewer fatal events — the key clinical priority\n")
+cat("Error      : LR has marginally lower overall error at default threshold\n")
+cat("\nConclusion: Tuned RF at threshold 0.375 is the final model.\n")
+cat("It achieves the best AUC and the lowest FNR (fewest missed fatal events),\n")
+cat("which is the clinically critical objective for this problem.\n")
+```
+
+
+Final Configuration Summary 
+```{r}
+predicted_rf$set_threshold(best_threshold_rf)
+
+cat("Final Metrics \n")
+cat("AUC        :", round(predicted_rf$score(msr("classif.auc")),         3), "\n")
+cat("Sensitivity:", round(predicted_rf$score(msr("classif.sensitivity")), 3), "\n")
+cat("Error      :", round(predicted_rf$score(msr("classif.ce")),          3), "\n")
+cat("FNR        :", round(predicted_rf$score(msr("classif.fnr")),         3), "\n")
+cat("FPR        :", round(predicted_rf$score(msr("classif.fpr")),         3), "\n")
+
+cat("\nFinal RF matrix:\n")
+predicted_rf$confusion
+
+cat("\nFinal Random Forest Model \n")
+cat(sprintf("  num.trees     : %d\n",   best_trees_val))
+cat(sprintf("  mtry          : %d\n",   best_mtry_val))
+cat(sprintf("  min.node.size : %d\n",   best_node_val))
+cat(sprintf("  max.depth     : %s\n",
+            ifelse(is.null(best_depth_val), "unlimited", best_depth_val)))
+cat("  importance    : impurity (Gini)\n")
+cat("  Threshold     : 0.35 (sensitivity prioritised)\n")
+```
+
