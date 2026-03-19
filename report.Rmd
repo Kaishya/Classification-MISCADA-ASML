@@ -35,7 +35,7 @@ Viewing the Data
 skim() = it tells the variable types, how many values are missing, and a mini histogram for each variable
 ```{r}
 skim(data) 
-# All 13 variables are numeric doubles — no factors, no missing values.
+# All 13 variables are numeric doubles no factors, no missing values.
 
 ```
 
@@ -322,7 +322,7 @@ ggplot(oob_rf_df, aes(x = trees, y = oob_error)) +
   geom_hline(yintercept = min(oob_rf_df$oob_error),
              linetype = "dashed", colour = "tomato", linewidth = 0.8) +
   labs(title = "Random Forest OOB Error Curve — Fold 1 (500 Trees)",
-       subtitle = "Dashed = minimum OOB error. Plateau confirms 500 trees is sufficient.",
+       subtitle = "Dashed = minimum OOB error. Plateau around 100",
        x = "Number of Trees", y = "OOB Classification Error") +
   theme_minimal()
 ```
@@ -391,7 +391,7 @@ predicted_rf_test <- default_lrn_rf$predict(task_test_rf_obj)
 
 Default model comparison
 ```{r}
-cat("Final test comparison \n")
+cat("Default model test comparison \n")
 metrics <- c("classif.auc", "classif.sensitivity", "classif.ce", "classif.fnr", "classif.fpr")
 
 for (m in metrics) {
@@ -448,7 +448,7 @@ logReg_tuning <- res_logreg$aggregate(measures) |>
   arrange(desc(classif.auc))
 
 kable(logReg_tuning, digits = 3,
-      caption = "Logistic Regression — Regularisation Variants (5-fold CV)") |>
+      caption = "Logistic Regression - Regularisation Variants (5-fold CV)") |>
   kable_styling(full_width = FALSE, position = "center")
 ```
 
@@ -474,9 +474,9 @@ print(round(as.matrix(coef(findMissingVars)), 4))
 Best logistic regression variant
 ```{r}
 best_lr_id <- logReg_tuning$learner_id[1]
-cat("Best LR variant= ", best_lr_id, "\n")
+cat("Best LR variant=", best_lr_id, "\n")
 cat("AUC         =", round(logReg_tuning$classif.auc[1], 3), "\n")
-cat("Sensitivity :=", round(logReg_tuning$classif.sensitivity[1], 3), "\n")
+cat("Sensitivity =", round(logReg_tuning$classif.sensitivity[1], 3), "\n")
 cat("Error       =", round(logReg_tuning$classif.ce[1], 3), "\n")
 ```
 
@@ -490,9 +490,10 @@ given it won above, more time spent on this tuning then the Logistic reg
 by using number of trees
 ```{r}
 #More trees reduce variance by averaging more bootstrap samples
+
 using_100_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 100,  id = "rf_100")
 using_300_trees  <- lrn("classif.ranger", predict_type = "prob", num.trees = 300,  id = "rf_300")
-using_500_trees  <- lrn("classif.ranger", predict_type = "prob", num.trees = 500,  id = "rf_500")
+using_500_trees  <- lrn("classif.ranger", predict_type = "prob", num.trees = 600,  id = "rf_500")
 using_1000_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 1000, id = "rf_1000")
 
 #adding trees to a Random Forest never causes overfitting
@@ -508,7 +509,7 @@ trees_results <- testing_trees$aggregate(measures) |>
   arrange(desc(classif.auc))
 
 kable(trees_results, digits = 3,
-      caption = "Stage 1: num.trees (100 trees held constant for mtry, fixed for next stages)") |>
+      caption = "num.trees") |>
   kable_styling(full_width = FALSE, position = "center")
 
 best_trees     <- trees_results$learner_id[1]
@@ -537,7 +538,7 @@ mtry_results <- testing_mtry$aggregate(measures) |>
   arrange(desc(classif.auc))
 
 kable(mtry_results, digits = 3,
-      caption = "Stage 2: mtry (best num.trees from Stage 1 used)") |>
+      caption = "mtry") |>
   kable_styling(full_width = FALSE, position = "center")
 
 best_mtry_row <- mtry_results$learner_id[1]
@@ -567,7 +568,7 @@ node_results <- tesing_node$aggregate(measures) |>
   arrange(desc(classif.auc))
 
 kable(node_results, digits = 3,
-      caption = "Stage 3: min.node.size (best num.trees and mtry used)") |>
+      caption = "min.node.size") |>
   kable_styling(full_width = FALSE, position = "center")
 
 best_node_row <- node_results$learner_id[1]
@@ -594,7 +595,7 @@ depth_results <- testing_depth$aggregate(measures) |>
   arrange(desc(classif.auc))
 
 kable(depth_results, digits = 3,
-      caption = "Stage 4: max.depth (all prior best values used)") |>
+      caption = "max.depth") |>
   kable_styling(full_width = FALSE, position = "center")
 
 best_depth_row <- depth_results$learner_id[1]
@@ -630,7 +631,7 @@ results_def_tuned <- bothmodels$aggregate(measures) |>
   as.data.frame() |>
   select(learner_id, classif.auc, classif.sensitivity, classif.ce, classif.fnr, classif.fpr)
 
-kable(results_def_tuned, digits = 3, caption = "Final: Tuned RF vs Default (5-fold CV)") |>
+kable(results_def_tuned, digits = 3, caption = "Tuned RF vs Default (5-fold CV)") |>
   kable_styling(full_width = FALSE, position = "center")
 
 cat("\n")
@@ -875,17 +876,26 @@ all_metrics <- c(
   "classif.npv"   # negative predictive value of those flagged survived are they survived
 )
 
-perf_table <- data.frame(
-  Metric = all_metrics,
-  RF     = sapply(all_metrics, function(m) tryCatch(round(predicted_rf$score(msr(m)), 3), error = function(e) NA)),
-  LR     = sapply(all_metrics, function(m) tryCatch(round(predicted_lr$score(msr(m)), 3), error = function(e) NA))
+metric_names <- c(
+  "AUC","Sensitivity (Recall)","Specificity","Classification Error","Accuracy","False Negative Rate","False Positive Rate","Precision (PPV)","Negative Predictive Value (NPV)"
 )
 
+perf_table <- data.frame(
+  RF = sapply(all_metrics, function(m)
+    tryCatch(round(predicted_rf$score(msr(m)), 3), error = function(e) NA)),
+  LR = sapply(all_metrics, function(m)
+    tryCatch(round(predicted_lr$score(msr(m)), 3), error = function(e) NA)),
+  Perfect = c(1, 1, 1, 0, 1, 0, 0, 1, 1)
+)
+
+rownames(perf_table) <- metric_names
+
 kable(perf_table, digits = 3,
-      caption = "Full Performance Metrics in Test Set (RF at t=0.35, LR at t=0.5)") |>
+      caption = "Full Performance Metrics in Test Set") |>
   kable_styling(full_width = FALSE, position = "center") |>
-  row_spec(which(perf_table$Metric %in% c("classif.auc", "classif.sensitivity")),
-           bold = TRUE, background = "#f0f8ff")
+  row_spec(which(metric_names %in% c("AUC", "Sensitivity (Recall)")),
+           bold = TRUE, background = "#f0f8ff") |>
+  column_spec(2, bold = TRUE)
 ```
 
 
@@ -925,34 +935,6 @@ ggplot(PrecisionRecalls, aes(x = recall, y = precision, colour = model)) +
 ```
 
 
-Final Performance Summary
-```{r}
-summary_metrics <- c("classif.auc", "classif.sensitivity", "classif.fpr",
-                     "classif.fnr", "classif.ce", "classif.acc")
-
-final_summary <- data.frame(
-  Metric       = summary_metrics,
-  `RF (t=0.35)` = sapply(summary_metrics, function(m) round(predicted_rf$score(msr(m)), 3)),
-  `LR (t=0.50)` = sapply(summary_metrics, function(m) round(predicted_lr$score(msr(m)), 3)),
-  check.names  = FALSE
-)
-
-kable(final_summary, digits = 3, caption = "Final Performance Summary — Test Set") |>
-  kable_styling(full_width = FALSE, position = "center") |>
-  row_spec(1:2, bold = TRUE, background = "#f0f8ff")
-
-cat("\n")
-cat("AUC        : RF wins — better overall discrimination at all thresholds\n")
-cat("Sensitivity: RF at 0.375 catches more fatal events than LR at 0.5\n")
-cat("FPR        : RF at 0.375 flags more survivors — the cost of higher sensitivity\n")
-cat("FNR        : RF at 0.375 misses fewer fatal events — the key clinical priority\n")
-cat("Error      : LR has marginally lower overall error at default threshold\n")
-cat("\nConclusion: Tuned RF at threshold 0.375 is the final model.\n")
-cat("It achieves the best AUC and the lowest FNR (fewest missed fatal events),\n")
-cat("which is the clinically critical objective for this problem.\n")
-```
-
-
 Final Configuration Summary 
 ```{r}
 predicted_rf$set_threshold(best_threshold_rf)
@@ -964,7 +946,7 @@ cat("Error      :", round(predicted_rf$score(msr("classif.ce")),          3), "\
 cat("FNR        :", round(predicted_rf$score(msr("classif.fnr")),         3), "\n")
 cat("FPR        :", round(predicted_rf$score(msr("classif.fpr")),         3), "\n")
 
-cat("\nFinal RF matrix:\n")
+cat("\nFinal Random Forest matrix:\n")
 predicted_rf$confusion
 
 cat("\nFinal Random Forest Model \n")
@@ -974,6 +956,6 @@ cat(sprintf("  min.node.size : %d\n",   best_node_val))
 cat(sprintf("  max.depth     : %s\n",
             ifelse(is.null(best_depth_val), "unlimited", best_depth_val)))
 cat("  importance    : impurity (Gini)\n")
-cat("  Threshold     : 0.35 (sensitivity prioritised)\n")
+cat("  Threshold     :", best_threshold_rf, "\n")
 ```
 
