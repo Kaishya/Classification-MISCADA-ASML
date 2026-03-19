@@ -36,13 +36,6 @@ skim() = it tells the variable types, how many values are missing, and a mini hi
 ```{r}
 skim(data) 
 # All 13 variables are numeric doubles — no factors, no missing values.
-#   Continuous : age, creatinine_phosphokinase, ejection_fraction,
-#                platelets, serum_creatinine, serum_sodium
-#   Binary 0/1 : anaemia, diabetes, high_blood_pressure, sex, smoking
-#   Excluded   : time — follow-up duration in days (range 4–285).
-#                Including it leaks the outcome: patients who died have
-#                short follow-up by definition. This is outcome leakage,
-#                not a genuine clinical predictor.
 
 ```
 
@@ -679,23 +672,21 @@ predicted_lr <- final_log_regression_model$predict(task_test_lr)[[1]]
 
 Picking Threshold
 ```{r}
-#sensitivity >= 0.6 AND fpr <= 0.25, minimise missed fatal events as the priority
-target_sensitivity <- 0.60
-target_fpr         <- 0.25
+thresholds <- seq(0.05, 0.95, by = 0.025) #go across many thresholds
 
-best_threshold_rf <- sweep_rf |>
-  filter(sensitivity >= target_sensitivity, fpr <= target_fpr) |>
-  arrange(fnr) |>
-  slice(1) |>
-  pull(threshold)
-#if no threshold meets both targets theb sensitivity >= 0.5
-if (length(best_threshold_rf) == 0) {
-  best_threshold_rf <- sweep_rf |>
-    filter(sensitivity >= 0.50) |>
-    arrange(fnr) |>
-    slice(1) |>
-    pull(threshold)
-}
+sweep_rf <- map_dfr(thresholds, function(t) {
+  predicted_rf$set_threshold(t)
+  data.frame(
+    threshold   = t,
+    sensitivity = predicted_rf$score(msr("classif.sensitivity")),
+    specificity = predicted_rf$score(msr("classif.specificity")),
+    fpr         = predicted_rf$score(msr("classif.fpr")),
+    fnr         = predicted_rf$score(msr("classif.fnr")),
+    error       = predicted_rf$score(msr("classif.ce")),
+    ppv         = tryCatch(predicted_rf$score(msr("classif.ppv")), error = function(e) NA)
+  )
+})
+predicted_rf$set_threshold(0.5)
 
 sweep_lr <- map_dfr(thresholds, function(t) {
   predicted_lr$set_threshold(t)
@@ -711,7 +702,24 @@ sweep_lr <- map_dfr(thresholds, function(t) {
 })
 predicted_lr$set_threshold(0.5)
 
-# Best LR threshold — same clinical rule as RF
+#where sensitivity >= 0.6 AND fpr <= 0.25, minimise FNR
+target_sensitivity <- 0.60
+target_fpr<- 0.25
+
+best_threshold_rf <- sweep_rf |>
+  filter(sensitivity >= target_sensitivity, fpr <= target_fpr) |>
+  arrange(fnr) |>
+  slice(1) |>
+  pull(threshold)
+#if no threshold meets both targets
+if (length(best_threshold_rf) == 0) {
+  best_threshold_rf <- sweep_rf |>
+    filter(sensitivity >= 0.50) |>
+    arrange(fnr) |>
+    slice(1) |>
+    pull(threshold)
+}
+
 best_threshold_lr <- sweep_lr |>
   filter(sensitivity >= target_sensitivity, fpr <= target_fpr) |>
   arrange(fnr) |>
@@ -729,6 +737,7 @@ cat("Best RF threshold :", best_threshold_rf, "\n")
 cat("Best LR threshold :", best_threshold_lr, "\n")
 
 ```
+
 ```{r}
 ggplot(sweep_rf, aes(x = threshold)) +
   geom_line(aes(y = sensitivity, colour = "Sensitivity (TPR)"),  linewidth = 1.1) +
