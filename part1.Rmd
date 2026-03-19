@@ -160,3 +160,63 @@ ggplot(data = melted_corr_mat, aes(x = Var1, y = Var2, fill = value)) +
   labs(title = "All Numeric Variables", fill = "Correlation")
 ```
 
+Preparing Data for Modelling
+```{r}
+data_model <- data |>
+  select(-anaemia_label, -diabetes_label, -high_bp_label, -smoking_label,
+         -outcome, -age_group, -time)
+
+skim(data_model)
+names(data_model)#final set of predictors to use
+```
+
+Principal Component Analysis 
+```{r}
+pca_input <- data_model[, -which(names(data_model) == "fatal_mi")]#all cols but fatal_mi
+pca_result <- prcomp(pca_input, center = TRUE, scale = TRUE)
+
+summary(pca_result)
+data$fatal_mi_factor <- factor(data$fatal_mi, labels = c("Survived", "Fatal Event"))#dummy variable to explain fatal_mi as a factor for PCA
+plot(pca_result, type = "l", main = "PCA Variance")#View the loadings (weights) for the first 4 components
+round(pca_result$rotation[, 1:4], 3)
+```
+
+Advanced PCA analysis 
+```{r}
+data_model_pca <- data_model |>
+  mutate(log_creatinine = log1p(serum_creatinine),
+         log_cpk        = log1p(creatinine_phosphokinase)) |>
+  select(-serum_creatinine, -creatinine_phosphokinase)
+
+selected_vars     <- c("age", "ejection_fraction", "serum_sodium", "log_creatinine", "log_cpk")
+pca_input_reduced <- data_model_pca[, selected_vars]
+pca_reduced       <- prcomp(pca_input_reduced, center = TRUE, scale = TRUE)
+
+autoplot(pca_reduced,
+         data   = data_model_pca |> mutate(fatal_mi_factor = factor(fatal_mi, labels = c("Survived", "Fatal Event"))),
+         colour = 'fatal_mi_factor', loadings = TRUE, loadings.label = TRUE) +
+  scale_color_manual(values = c("Survived" = "skyblue", "Fatal Event" = "tomato")) +
+  labs(title = "Reduced & Log-Transformed PCA",
+       subtitle = "Focusing on top clinical predictors", colour = "Outcome") +
+  theme_minimal()
+
+summary(pca_reduced)
+plot(pca_reduced, type = "l", main = "Reduced PCA Variance")
+round(pca_reduced$rotation[, 1:4], 3)
+```
+```{r}
+var_full <- pca_result$sdev^2
+var_reduced <- pca_reduced$sdev^2
+plot(var_full, type = "b", pch = 16, lwd = 2,
+     xlab = "Principal Component",
+     ylab = "Variance",
+     main = "PCA Variance Comparison")
+
+lines(var_reduced, type = "b", pch = 17, col = "red", lwd = 2)
+legend("topright",
+       legend = c("Full PCA", "Reduced PCA"),
+       col = c("black", "red"),
+       lwd = 2,
+       pch = c(16, 17))
+```
+
