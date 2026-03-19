@@ -3,8 +3,6 @@ title: "MISCADA ASML: Classification Summative Coursework"
 output: html_notebook
 ---
 
-
-
 Libraries
 ```{r}
 library(tidyverse)
@@ -20,6 +18,8 @@ library(kableExtra)
 library(knitr)
 library(pROC)
 library(glmnet)
+library(GGally)
+
 ```
 
 Load the Data
@@ -35,12 +35,12 @@ Viewing the Data
 skim() = it tells the variable types, how many values are missing, and a mini histogram for each variable
 ```{r}
 skim(data) 
-# All 13 variables are numeric doubles no factors, no missing values.
+#All 13 variables are numeric doubles no factors
 
 ```
 
 
-Also check the basic structure and confirm there are no missing values:
+check the basic structure and confirm there are no missing values
 ```{r}
 str(data)#understand data structure
 summary(data) #summary stats
@@ -89,7 +89,11 @@ ggplot(fatality_by_age |> arrange(desc(pct_fatal)),
   labs(title = "Fatality Rate by Age Group",
        subtitle = "Older patients show substantially higher mortality",
        x = "Age Group", y = "Fatal Event Rate (%)") +
-  theme_minimal() + guides(fill = "none")
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)
+  ) + guides(fill = "none")
 ```
 
 Fatality Rate by others
@@ -105,7 +109,11 @@ ggplot(fatality_by_existingconditions,
   labs(title = "Fatality Rate by Number of Coexisting conditions",
        subtitle = "Anaemia + Diabetes + High BP + Smoking combined",
        x = "Number of Coexisting conditions", y = "Fatal Event Rate (%)") +
-  theme_minimal() + guides(fill = "none") +
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)
+  ) + guides(fill = "none") +
   expand_limits(y = max(fatality_by_existingconditions$pct_fatal) * 1.15)
 ```
 
@@ -114,19 +122,45 @@ Further Graphical Interpretations
 ggplot(data, aes(x = age, fill = outcome)) +
   geom_density(alpha = 0.5) +
   labs(title = "Age Distribution by Survival Status", x = "Age", y = "Density", fill = "Outcome") +
-  theme_minimal()
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)
+  )
 ```
 
 
 Pairwise Relationships
+
 ```{r}
-ggpairs(data |> select(age, ejection_fraction, serum_creatinine, serum_sodium, outcome),
-        aes(color = outcome, alpha = 0.5)) +
-  scale_color_manual(values = c("Survived" = "skyblue", "Fatal Event" = "tomato")) +
-  scale_fill_manual(values = c("Survived" = "skyblue", "Fatal Event" = "tomato")) +
-  labs(title = "Pairwise Relationships of Key Clinical Variables") +
-  theme_minimal()
+library(GGally)
+
+# Rename variables for readable labels
+pairs_data <- data |>
+  select(`Age`= age,`Ejection\nFraction` = ejection_fraction,`Serum\nCreatinine` = serum_creatinine,`Serum\nSodium`= serum_sodium,`Outcome` = outcome)
+
+ggpairs(
+  pairs_data,
+  columns    = 1:4,
+  aes(colour = Outcome, alpha = 0.6),
+  upper = list(continuous = wrap("cor",    size = 3.5)),
+  lower = list(continuous = wrap("points", size = 0.8, alpha = 0.4)),
+  diag  = list(continuous = wrap("densityDiag", alpha = 0.5)),
+  columnLabels = c("Age", "Ejection\nFraction", "Serum\nCreatinine", "Serum\nSodium")
+) +
+  scale_colour_manual(values = c("Survived" = "steelblue", "Fatal Event" = "tomato")) +
+  scale_fill_manual(  values = c("Survived" = "steelblue", "Fatal Event" = "tomato")) +
+  labs(title    = "Pairwise Relationships of Key Clinical Variables",
+       subtitle = "Upper: correlation | Lower: scatter | Diagonal: density by outcome") +
+  theme_minimal(base_size = 11) +
+  theme(
+    strip.text       = element_text(face = "bold", size = 9),
+    legend.position  = "bottom",
+    plot.title       = element_text(face = "bold"),
+    plot.subtitle    = element_text(colour = "grey40")
+  )
 ```
+
 
 Correlation Matrix
 ```{r}
@@ -181,12 +215,13 @@ round(pca_reduced$rotation[, 1:4], 3)
 var_full<- pca_result$sdev^2
 var_reduced<- pca_reduced$sdev^2
 plot(var_full, type = "b", pch = 16, lwd = 2,
+     main = "PCA Variance Comparison",
      xlab = "Principal Component",
      ylab = "Variance",
-     main = "PCA Variance Comparison")
+    cex.main = 1.5)
 
 lines(var_reduced, type = "b", pch = 17, col = "red", lwd = 2)
-legend("topright",
+legend("topright",cex = 1.2,
        legend = c("Full PCA", "Reduced PCA"),
        col = c("black", "red"),
        lwd = 2,
@@ -223,15 +258,15 @@ Train / Test Split
 n <- nrow(data_model)
 train_idx <- sample(n, size = floor(0.8 * n))
 
-train_data    <- data_model[train_idx, ]
-test_data     <- data_model[-train_idx, ]
-train_data_lr <- data_model_lr[train_idx, ]
-test_data_lr  <- data_model_lr[-train_idx, ]
+train_data<- data_model[train_idx, ]
+test_data<- data_model[-train_idx, ]
+train_data_lr<- data_model_lr[train_idx, ]
+test_data_lr<- data_model_lr[-train_idx, ]
 
-cat("Training set size:", nrow(train_data), "\n")
-cat("Test set size:    ", nrow(test_data),  "\n")
-cat("Fatal event rate (train):", round(mean(train_data$fatal_mi == "Fatal") * 100, 1), "%\n")
-cat("Fatal event rate (test): ", round(mean(test_data$fatal_mi  == "Fatal") * 100, 1), "%\n")
+cat("Training set size=", nrow(train_data), "\n")
+cat("Test set size=    ", nrow(test_data),  "\n")
+cat("Fatal event rate (train)=", round(mean(train_data$fatal_mi == "Fatal") * 100, 1), "%\n")
+cat("Fatal event rate (test)= ", round(mean(test_data$fatal_mi  == "Fatal") * 100, 1), "%\n")
 ```
 
 Task Definition
@@ -321,10 +356,14 @@ ggplot(oob_rf_df, aes(x = trees, y = oob_error)) +
   geom_line(colour = "steelblue", linewidth = 0.8) +
   geom_hline(yintercept = min(oob_rf_df$oob_error),
              linetype = "dashed", colour = "tomato", linewidth = 0.8) +
-  labs(title = "Random Forest OOB Error Curve — Fold 1 (500 Trees)",
+  labs(title = "Random Forest OOB Error Curve",
        subtitle = "Dashed = minimum OOB error. Plateau around 100",
        x = "Number of Trees", y = "OOB Classification Error") +
-  theme_minimal()
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)
+  )
 ```
 
 Random Forest Variable Importance
@@ -341,7 +380,7 @@ print(importance_df)
 ggplot(importance_df, aes(x = reorder(variable, importance), y = importance)) +
   geom_col(fill = "steelblue") +
   coord_flip() +
-  labs(title = "Random Forest Variable Importance — Fold 1",
+  labs(title = "Random Forest Variable Importance @ Fold 1",
        subtitle = "Gini impurity reduction summed across all 500 trees",
        x = NULL, y = "Mean Decrease in Gini Impurity") +
   theme_minimal()
@@ -367,8 +406,8 @@ ggplot(coef_df, aes(x = reorder(variable, coef), y = coef, fill = coef > 0)) +
   coord_flip() +
   scale_fill_manual(values = c("TRUE" = "tomato", "FALSE" = "steelblue"),
                     labels = c("TRUE" = "Increases Fatal risk", "FALSE" = "Decreases Fatal risk")) +
-  labs(title = "Logistic Regression Coefficients — Fold 1",
-       subtitle = "Red = increases log-odds of Fatal; Blue = decreases",
+  labs(title = "Logistic Regression Coefficients @ Fold 1",
+       subtitle = "Red increases log-odds of Fatal vice versa",
        x = NULL, y = "Coefficient", fill = NULL) +
   theme_minimal()
 ```
@@ -411,7 +450,6 @@ cat("\nRandom Forest:\n")
 predicted_rf_test$confusion
 cat("\nWinner: Random Forest since sensitivity means missing a fatal error\n")
 
-#Random Forest has the higher AUC so better overall discrimination. Logistic Regression has the higher sensitivity and catches more.
 #In a medical context where missing a fatal event is the worst error, sensitivity is the clinically critical metric like in Lecture 9
 ```
 
@@ -454,7 +492,7 @@ kable(logReg_tuning, digits = 3,
 
 Variables removed abive 
 ```{r}
-# Variables shrunk to zero contributed no independent signal after accounting for other predictors
+#variables shrunk to zero contributed no independent signal after accounting for other predictors
 findMissingVars <- tryCatch(
   res_logreg$resample_result(2)$learners[[1]]$model$classif.glmnet$model,
   error = function(e) NULL
@@ -475,12 +513,10 @@ Best logistic regression variant
 ```{r}
 best_lr_id <- logReg_tuning$learner_id[1]
 cat("Best LR variant=", best_lr_id, "\n")
-cat("AUC         =", round(logReg_tuning$classif.auc[1], 3), "\n")
+cat("AUC=", round(logReg_tuning$classif.auc[1], 3), "\n")
 cat("Sensitivity =", round(logReg_tuning$classif.sensitivity[1], 3), "\n")
-cat("Error       =", round(logReg_tuning$classif.ce[1], 3), "\n")
+cat("Error=", round(logReg_tuning$classif.ce[1], 3), "\n")
 ```
-
-
 
 
 
@@ -492,15 +528,15 @@ by using number of trees
 #More trees reduce variance by averaging more bootstrap samples
 
 using_100_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 100,  id = "rf_100")
-using_300_trees  <- lrn("classif.ranger", predict_type = "prob", num.trees = 300,  id = "rf_300")
-using_500_trees  <- lrn("classif.ranger", predict_type = "prob", num.trees = 600,  id = "rf_500")
-using_1000_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 1000, id = "rf_1000")
+using_300_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 300,  id = "rf_300")
+using_500_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 600,  id = "rf_500")
+using_1000_trees<- lrn("classif.ranger", predict_type = "prob", num.trees = 1000, id = "rf_1000")
 
 #adding trees to a Random Forest never causes overfitting
 testing_trees <- benchmark(data.table(
-  task       = list(task_rf_hr),
-  learner    = list(using_100_trees, using_300_trees, using_500_trees, using_1000_trees),
-  resampling = list(cv5)
+  task  = list(task_rf_hr),
+  learner = list(using_100_trees, using_300_trees, using_500_trees, using_1000_trees),
+  resampling= list(cv5)
 ), store_models = TRUE)
 
 trees_results <- testing_trees$aggregate(measures) |>
@@ -527,8 +563,8 @@ using_mtry5 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_tre
 using_mtry8 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 8, id = "rf_mtry8")
 
 testing_mtry <- benchmark(data.table(
-  task       = list(task_rf_hr),
-  learner    = list(using_mtry2, using_mtry3, using_mtry5, using_mtry8),
+  task = list(task_rf_hr),
+  learner = list(using_mtry2, using_mtry3, using_mtry5, using_mtry8),
   resampling = list(cv5)
 ), store_models = TRUE)
 
@@ -551,14 +587,14 @@ cat("\nBest mtry:", best_mtry_val, "| AUC:", round(mtry_results$classif.auc[1], 
 min.node.size to set the minimum number of observations required in a leaf node
 ```{r}
 using_node1  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 1,  id = "rf_node1")
-lrn_rf_node5  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 5,  id = "rf_node5")
+lrn_rf_node5<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 5,  id = "rf_node5")
 using_node10 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 10, id = "rf_node10")
 using_node15 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 15, id = "rf_node15")
 using_node20 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 20, id = "rf_node20")
 
 tesing_node <- benchmark(data.table(
-  task       = list(task_rf_hr),
-  learner    = list(using_node1, lrn_rf_node5, using_node10, using_node15, using_node20),
+  task= list(task_rf_hr),
+  learner = list(using_node1, lrn_rf_node5, using_node10, using_node15, using_node20),
   resampling = list(cv5)
 ), store_models = TRUE)
 
@@ -578,15 +614,15 @@ cat("\nBest min.node.size:", best_node_val, "| AUC:", round(node_results$classif
 
 max.depth = applies a hard cap on tree depth from the top down
 ```{r}
-using_d3  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 3,  id = "rf_depth3")
-using_d5  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 5,  id = "rf_depth5")
-using_d10 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 10, id = "rf_depth10")
-using_dul <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, id = "rf_unlimited")
+using_d3<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 3,  id = "rf_depth3")
+using_d5<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 5,  id = "rf_depth5")
+using_d10<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 10, id = "rf_depth10")
+using_dul<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, id = "rf_unlimited")
 
 testing_depth <- benchmark(data.table(
-  task       = list(task_rf_hr),
-  learner    = list(using_d3, using_d5, using_d10, using_dul),
-  resampling = list(cv5)
+  task  = list(task_rf_hr),
+  learner = list(using_d3, using_d5, using_d10, using_dul),
+  resampling= list(cv5)
 ), store_models = TRUE)
 
 depth_results <- testing_depth$aggregate(measures) |>
@@ -610,18 +646,18 @@ cat("\nBest max.depth:", ifelse(is.null(best_depth_val), "unlimited", best_depth
 Final model configuration vs default models
 ```{r}
 set.seed(100)
-training_rf_default <- lrn("classif.ranger", predict_type = "prob", num.trees = 500,
+training_rf_default<- lrn("classif.ranger", predict_type = "prob", num.trees = 500,
                         importance = "impurity", id = "rf_default")
 
 #best from the above
-rf_hyperparams_tuned <- lrn("classif.ranger", predict_type = "prob",
+rf_hyperparams_tuned<- lrn("classif.ranger", predict_type = "prob",
                      num.trees = best_trees_val, mtry = best_mtry_val,
                      min.node.size = best_node_val, importance = "impurity", id = "rf_tuned")
 
 #add max.depth if a finite value found above
 if (!is.null(best_depth_val)) rf_hyperparams_tuned$param_set$values$max.depth <- best_depth_val
 
-bothmodels <- benchmark(data.table(
+bothmodels<- benchmark(data.table(
   task       = list(task_rf_hr),
   learner    = list(training_rf_default, rf_hyperparams_tuned),
   resampling = list(cv5)
@@ -644,7 +680,7 @@ cat(sprintf("AUC improvement= %.3f\n", diff(results_def_tuned$classif.auc[c(1,2)
 Retrain final tuned models on full training set
 predicted_rf and predicted_lr are the final test set predictions used for performance metrics
 ```{r}
-final_random_forest_model <- lrn("classif.ranger",
+final_random_forest_model<- lrn("classif.ranger",
                  predict_type  = "prob",
                  num.trees= best_trees_val,
                  mtry = best_mtry_val,
@@ -664,18 +700,18 @@ final_log_regression_model <-
 
 final_log_regression_model$train(task_lr_hf)
 
-task_test_rf <- TaskClassif$new(id = "test_rf", backend = test_data,    target = "fatal_mi", positive = "Fatal")
-task_test_lr <- TaskClassif$new(id = "test_lr", backend = test_data_lr, target = "fatal_mi", positive = "Fatal")
+task_test_rf<- TaskClassif$new(id = "test_rf", backend = test_data,    target = "fatal_mi", positive = "Fatal")
+task_test_lr<- TaskClassif$new(id = "test_lr", backend = test_data_lr, target = "fatal_mi", positive = "Fatal")
 
-predicted_rf <- final_random_forest_model$predict(task_test_rf)
-predicted_lr <- final_log_regression_model$predict(task_test_lr)[[1]]
+predicted_rf<- final_random_forest_model$predict(task_test_rf)
+predicted_lr<- final_log_regression_model$predict(task_test_lr)[[1]]
 ```
 
 Picking Threshold
 ```{r}
-thresholds <- seq(0.05, 0.95, by = 0.025) #go across many thresholds
+thresholds<- seq(0.05, 0.95, by = 0.025) #go across many thresholds
 
-sweep_rf <- map_dfr(thresholds, function(t) {
+sweep_rf<- map_dfr(thresholds, function(t) {
   predicted_rf$set_threshold(t)
   data.frame(
     threshold   = t,
@@ -689,7 +725,7 @@ sweep_rf <- map_dfr(thresholds, function(t) {
 })
 predicted_rf$set_threshold(0.5)
 
-sweep_lr <- map_dfr(thresholds, function(t) {
+sweep_lr<- map_dfr(thresholds, function(t) {
   predicted_lr$set_threshold(t)
   data.frame(
     threshold   = t,
@@ -703,7 +739,6 @@ sweep_lr <- map_dfr(thresholds, function(t) {
 })
 predicted_lr$set_threshold(0.5)
 
-#where sensitivity >= 0.6 AND fpr <= 0.25, minimise FNR
 target_sensitivity <- 0.60
 target_fpr<- 0.25
 
@@ -754,9 +789,13 @@ ggplot(sweep_rf, aes(x = threshold)) +
                                  "False Positive Rate" = "tomato",
                                  "False Negative Rate" = "darkgreen")) +
   labs(title = "Threshold Analysis for Random Forest",
-       subtitle = "Lowering threshold increases sensitivity and FPR; raises specificity and FNR",
+       subtitle = "Lowering threshold increases sensitivity but raises specificity and FNR",
        x = "Classification Threshold", y = "Rate", colour = NULL) +
-  theme_minimal() + theme(legend.position = "bottom")
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)
+  ) + theme(legend.position = "bottom")
 ```
 
 Performance at threshold
@@ -794,8 +833,7 @@ predicted_rf$confusion
 
 ROC Curves
 ```{r}
-# ROC curves show the full discrimination profile across all thresholds.
-# The closer the curve hugs the top-left corner, the better the model.
+
 # The diagonal represents random guessing (AUC = 0.5).
 predicted_rf$set_threshold(best_threshold_rf)
 predicted_lr$set_threshold(best_threshold_lr)
@@ -819,10 +857,13 @@ ggplot(roc_df, aes(x = fpr, y = tpr, colour = model)) +
            colour = "grey50", size = 3.2) +
   scale_colour_manual(values = c("tomato", "steelblue")) +
   labs(title = "ROC Curves with Final Models on Test Set",
-       subtitle = "Top-left corner = perfect discrimination. Diagonal = random.",
-       x = "False Positive Rate (1 - Specificity)", y = "True Positive Rate (Sensitivity)",
+       x = "False Positive Rate", y = "True Positive Rate",
        colour = NULL) +
-  theme_minimal() + theme(legend.position = "bottom")
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16)
+  ) + theme(legend.position = "bottom")
 ```
 
 
@@ -859,7 +900,7 @@ predicted_rf$confusion
 ```
 
 
-Full Performance Metrics — final models at chosen thresholds
+Full Performance Metrics
 ```{r}
 predicted_rf$set_threshold(best_threshold_rf)
 predicted_lr$set_threshold(best_threshold_lr)
@@ -872,8 +913,8 @@ all_metrics <- c(
   "classif.acc",
   "classif.fnr",
   "classif.fpr",
-  "classif.ppv",  # precision of those flagged fatal how many are fatal
-  "classif.npv"   # negative predictive value of those flagged survived are they survived
+  "classif.ppv",# precision of those flagged fatal how many are fatal
+  "classif.npv" # negative predictive value of those flagged survived are they survived
 )
 
 metric_names <- c(
