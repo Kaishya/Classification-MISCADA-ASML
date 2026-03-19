@@ -1,0 +1,97 @@
+---
+title: "Part 2"
+output: html_notebook
+---
+
+
+Model Fitting
+
+Setup and Data Prep for Modelling
+```{r}
+#data <- readr::read_csv("heart_failure.csv")
+
+data_model <- data |>#re-prepare data
+  mutate(
+    comorbidity_count = anaemia + diabetes + high_blood_pressure + smoking,
+    fatal_mi = factor(fatal_mi, levels = c(1, 0), labels = c("Fatal", "Survived"))
+  ) |>
+  select(-time)
+
+set.seed(100)
+```
+
+
+Train / Test Split Data
+```{r}
+n <- nrow(data_model)
+train_idx <- sample(n, size = floor(0.8 * n)) #80% for evaluating models 
+
+train_data <- data_model[train_idx, ]
+test_data  <- data_model[-train_idx, ]
+
+cat("Training set size:", nrow(train_data), "\n")
+cat("Test set size:    ", nrow(test_data), "\n")
+cat("Fatal event rate (train):", round(mean(train_data$fatal_mi == "Fatal") * 100, 1), "%\n")
+cat("Fatal event rate (test): ", round(mean(test_data$fatal_mi  == "Fatal") * 100, 1), "%\n")
+```
+Task Definition
+```{r}
+task_hf <- TaskClassif$new(id = "HeartFailure", backend = train_data, target = "fatal_mi", positive = "Fatal") # Fatal = positive class
+task_hf
+```
+
+Cross-Validation Strategy
+```{r}
+cv5 <- rsmp("cv", folds = 5)
+cv5$instantiate(task_hf)
+```
+
+
+Performance Measures
+```{r}
+as.data.table(mlr_measures) #choose measures
+```
+
+```{r}
+measures <- list(
+  msr("classif.ce"),         
+  msr("classif.acc"),        
+  msr("classif.auc"),         
+  msr("classif.sensitivity"), 
+  msr("classif.fnr"),         
+  msr("classif.fpr")          
+)
+```
+
+Check what models are available
+```{r}
+as.data.table(mlr_learners)
+```
+
+Models 
+```{r}
+lrn_baseline <- lrn("classif.featureless", predict_type = "prob")
+
+lrn_log_reg <- lrn("classif.log_reg", predict_type = "prob")
+pl_log_reg<- po("encode") %>>% po(lrn_log_reg)
+
+lrn_ranger<- lrn("classif.ranger",  predict_type = "prob",
+                     num.trees = 500, importance = "impurity")
+
+```
+
+
+
+All Models Compared on the Same Folds
+```{r}
+res <- benchmark(data.table(
+  task       = list(task_hf),
+  learner    = list(lrn_baseline, pl_log_reg, lrn_ranger),
+  resampling = list(cv5)
+), store_models = TRUE)
+
+res$aggregate(measures)
+```
+
+
+Inspecting Individual Models
