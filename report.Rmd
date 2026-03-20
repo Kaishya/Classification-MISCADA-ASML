@@ -460,6 +460,7 @@ Logistic Regression Regularisation
 #alpha = 1 Lasso does automatic feature selection, 
 #alpha = 0 Ridge all predictors
 #alpha = 0.5 Elastic Net does both
+set.seed(5)
 using_logreg_plain  <- lrn("classif.log_reg", predict_type = "prob", id = "logreg_plain")
 using_glmnet_l1     <- lrn("classif.glmnet",  predict_type = "prob", alpha = 1,   lambda = 0.01,  id = "lasso")
 using_glmnet_l2     <- lrn("classif.glmnet",  predict_type = "prob", alpha = 0,   lambda = 0.01,  id = "ridge")
@@ -526,7 +527,7 @@ given it won above, more time spent on this tuning then the Logistic reg
 by using number of trees
 ```{r}
 #More trees reduce variance by averaging more bootstrap samples
-
+set.seed(5)
 using_100_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 100,  id = "rf_100")
 using_300_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 300,  id = "rf_300")
 using_500_trees <- lrn("classif.ranger", predict_type = "prob", num.trees = 600,  id = "rf_500")
@@ -557,6 +558,7 @@ cat("\nBest num.trees:", best_trees_val, "| AUC:", round(trees_results$classif.a
 
 mtry = how many features are considered at each split 
 ```{r}
+set.seed(5)
 using_mtry2 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 2, id = "rf_mtry2")
 using_mtry3 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 3, id = "rf_mtry3")
 using_mtry5 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = 5, id = "rf_mtry5")
@@ -586,6 +588,7 @@ cat("\nBest mtry:", best_mtry_val, "| AUC:", round(mtry_results$classif.auc[1], 
 
 min.node.size to set the minimum number of observations required in a leaf node
 ```{r}
+set.seed(5)
 using_node1  <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 1,  id = "rf_node1")
 lrn_rf_node5<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 5,  id = "rf_node5")
 using_node10 <- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = 10, id = "rf_node10")
@@ -614,6 +617,7 @@ cat("\nBest min.node.size:", best_node_val, "| AUC:", round(node_results$classif
 
 max.depth = applies a hard cap on tree depth from the top down
 ```{r}
+set.seed(5)
 using_d3<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 3,  id = "rf_depth3")
 using_d5<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 5,  id = "rf_depth5")
 using_d10<- lrn("classif.ranger", predict_type = "prob", num.trees = best_trees_val, mtry = best_mtry_val, min.node.size = best_node_val, max.depth = 10, id = "rf_depth10")
@@ -645,7 +649,7 @@ cat("\nBest max.depth:", ifelse(is.null(best_depth_val), "unlimited", best_depth
 
 Final model configuration vs default models
 ```{r}
-set.seed(100)
+set.seed(5)
 training_rf_default<- lrn("classif.ranger", predict_type = "prob", num.trees = 500,
                         importance = "impurity", id = "rf_default")
 
@@ -680,6 +684,7 @@ cat(sprintf("AUC improvement= %.3f\n", diff(results_def_tuned$classif.auc[c(1,2)
 Retrain final tuned models on full training set
 predicted_rf and predicted_lr are the final test set predictions used for performance metrics
 ```{r}
+set.seed(5)
 final_random_forest_model<- lrn("classif.ranger",
                  predict_type  = "prob",
                  num.trees= best_trees_val,
@@ -709,6 +714,7 @@ predicted_lr<- final_log_regression_model$predict(task_test_lr)[[1]]
 
 Picking Threshold
 ```{r}
+set.seed(5)
 thresholds<- seq(0.05, 0.95, by = 0.025) #go across many thresholds
 
 sweep_rf<- map_dfr(thresholds, function(t) {
@@ -871,6 +877,7 @@ ggplot(roc_df, aes(x = fpr, y = tpr, colour = model)) +
 
 Final Test Set 
 ```{r}
+set.seed(5)
 # Compare tuned RF against default RF on the test set before selecting threshold
 final_default_rf <- lrn("classif.ranger", predict_type = "prob", num.trees = 500, importance = "impurity")
 final_default_rf$train(task_rf_hr)
@@ -955,8 +962,8 @@ PrecisionRecall_df_lr <- map_dfr(thresholds, function(t) {
   predicted_lr$set_threshold(t)
   data.frame(threshold = t,
              precision = tryCatch(predicted_lr$score(msr("classif.ppv")),         error = function(e) NA),
-             recall    = tryCatch(predicted_lr$score(msr("classif.sensitivity")), error = function(e) NA),
-             model     = "Logistic Regression")
+             recall= tryCatch(predicted_lr$score(msr("classif.sensitivity")), error = function(e) NA),
+             model= "Logistic Regression")
 })
 
 PrecisionRecalls <- bind_rows(PrecisionRecall_df, PrecisionRecall_df_lr) |> filter(!is.na(precision), !is.na(recall))
@@ -991,10 +998,10 @@ cat("\nFinal Random Forest matrix:\n")
 predicted_rf$confusion
 
 cat("\nFinal Random Forest Model \n")
-cat(sprintf("  num.trees     : %d\n",   best_trees_val))
-cat(sprintf("  mtry          : %d\n",   best_mtry_val))
-cat(sprintf("  min.node.size : %d\n",   best_node_val))
-cat(sprintf("  max.depth     : %s\n",
+cat(sprintf("num.trees     : %d\n",   best_trees_val))
+cat(sprintf("mtry          : %d\n",   best_mtry_val))
+cat(sprintf("min.node.size : %d\n",   best_node_val))
+cat(sprintf("max.depth     : %s\n",
             ifelse(is.null(best_depth_val), "unlimited", best_depth_val)))
 cat("  importance    : impurity (Gini)\n")
 cat("  Threshold     :", best_threshold_rf, "\n")
